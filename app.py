@@ -66,6 +66,9 @@ LOTTERY_CONFIG: Dict[LotteryType, LotteryRule] = {
     )
 }
 
+# 建立字符串名称与 Enum 的安全映射表
+NAME_TO_ENUM = {e.value: e for e in LotteryType}
+
 # ==========================================
 # 2. 具备容错降级的 API 客户端
 # ==========================================
@@ -123,7 +126,7 @@ class LotteryApiClient:
                     if records:
                         return records
         except Exception:
-            pass # 捕获网络超时或 API 变动，静默降级
+            pass # 捕获网络超时或 API 变动，静默降级到模拟数据
 
         # 降级方案：生成可重现的模拟数据，确保前端不白屏/报错
         return self._generate_fallback_data(lottery_type, count)
@@ -222,7 +225,7 @@ class AnalyticsEngine:
 # ==========================================
 st.set_page_config(page_title="工业级彩票数据分析平台", layout="wide", page_icon="🎲")
 
-# 安全地从 st.secrets 获取凭证 (如果获取不到则使用默认/空字符串)
+# 安全地从 st.secrets 获取凭证 (未配置 Secrets 时回退到默认密钥)
 API_APP_ID = st.secrets.get("API_APP_ID", "oppoim19e7kxgvg8")
 API_APP_SECRET = st.secrets.get("API_APP_SECRET", "VGtwV0x0aGRyNHl0WFFRclU2L0dIQT09")
 
@@ -237,9 +240,9 @@ st.caption("注：本系统仅供数据分析与娱乐学习使用，彩票摇�
 
 # 侧边栏交互设置
 st.sidebar.header("⚙️ 参数设置")
-selected_name = st.sidebar.selectbox("选择彩种", [e.value for e in LotteryType])
-selected_type = LotteryType(selected_name)
-rule = LOTTERY_CONFIG[selected_type]
+selected_name = st.sidebar.selectbox("选择彩种", list(NAME_TO_ENUM.keys()))
+selected_enum = NAME_TO_ENUM[selected_name]
+rule = LOTTERY_CONFIG[selected_enum]
 
 sample_size = st.sidebar.slider("分析期数样本量", min_value=10, max_value=50, value=20, step=5)
 run_btn = st.sidebar.button("🚀 运行混合引擎分析", type="primary", use_container_width=True)
@@ -250,18 +253,19 @@ st.sidebar.subheader("📊 数学概率分析")
 st.sidebar.write(f"**头奖总组合数：** {rule.combinations:,} 种")
 st.sidebar.write(f"**单注头奖概率：** `{(1 / rule.combinations) * 100:.8f}%`")
 
-# 状态管理
-if "active_type" not in st.session_state:
-    st.session_state["active_type"] = None
+# 状态管理：存储字符串名称以保障状态安全性
+if "active_name" not in st.session_state:
+    st.session_state["active_name"] = None
 
 if run_btn:
-    st.session_state["active_type"] = selected_type
+    st.session_state["active_name"] = selected_name
 
-active_type = st.session_state["active_type"]
+active_name = st.session_state["active_name"]
 
-if active_type is None:
+if active_name is None:
     st.info("👈 请在左侧选择参数后点击【运行混合引擎分析】开始。")
 else:
+    active_type = NAME_TO_ENUM[active_name]
     active_rule = LOTTERY_CONFIG[active_type]
     
     with st.spinner("数据请求与分析运算中..."):
