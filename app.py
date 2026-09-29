@@ -33,7 +33,7 @@ st.sidebar.subheader("📊 数学概率分析")
 st.sidebar.write(f"**头奖总组合数：** {rule['comb']:,} 种")
 st.sidebar.write(f"**单注头奖概率：** `{(1 / rule['comb']) * 100:.8f}%`")
 
-# 多链路穿透（解决云端海外 Server 访问国内接口被墙的问题）
+# 穿透防火墙的高可用多通道数据提取
 def fetch_lottery_data(name, count):
     current_rule = get_rule_info(name)
     records = []
@@ -43,60 +43,61 @@ def fetch_lottery_data(name, count):
     code_map = {"双色球": "ssq", "超级大乐透": "dlt", "福彩3D": "fc3d"}
     target_code = code_map.get(name)
 
-    # 链路 1：使用无域限制的开放数据 Mirror 节点（专治 Streamlit Cloud 超时）
-    if target_code:
-        mirror_urls = [
-            f"https://fastly.jsdelivr.net/gh/fanzheng/lottery-data@main/data/{target_code}.json",
-            f"https://raw.githubusercontent.com/fanzheng/lottery-data/main/data/{target_code}.json"
-        ]
-        for url in mirror_urls:
-            try:
-                resp = requests.get(url, timeout=3)
-                if resp.status_code == 200:
-                    json_data = resp.json()[:count]
-                    for item in json_data:
-                        issue = str(item.get("issue", "N/A"))
-                        p_nums = [int(x) for x in item.get("red", [])]
-                        s_nums = [int(x) for x in item.get("blue", [])]
-                        records.append({"issue": issue, "p": sorted(p_nums), "s": sorted(s_nums)})
-                    if records:
-                        is_real = True
-                        log_msg = f"🟢 成功提取真实开奖数据！已同步最新 {len(records)} 期【{name}】真实历史记录。"
-                        break
-            except Exception:
-                continue
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*"
+    }
 
-    # 链路 2：若链路 1 没拿全，尝试直连国内 API 代理节点
-    if not records and target_code:
+    # 通道 1：极速开放 API 节点
+    if target_code:
         try:
-            api_url = f"https://www.mxnzp.com/api/lottery/common/history?code={target_code}&page=1"
-            headers = {"app_id": "oppoim19e7kxgvg8", "app_secret": "VGtwV0x0aGRyNHl0WFFRclU2L0dIQT09"}
-            resp = requests.get(api_url, headers=headers, timeout=3)
-            if resp.status_code == 200 and resp.json().get("code") == 1:
-                data_list = resp.json().get("data", [])[:count]
-                for item in data_list:
-                    issue = str(item.get("expect"))
-                    code_str = str(item.get("openCode", "")).replace(" ", "")
+            url1 = f"https://api.pinyue.info/api/lottery/history?code={target_code}&limit={count}"
+            resp = requests.get(url1, headers=headers, timeout=4)
+            if resp.status_code == 200:
+                json_data = resp.json()
+                items = json_data.get("data") or json_data.get("result") or []
+                for item in items[:count]:
+                    issue = str(item.get("expect") or item.get("issue") or "N/A")
+                    code_str = str(item.get("openCode") or item.get("code") or "").replace(" ", "")
                     p_nums, s_nums = [], []
                     if "+" in code_str:
                         p_part, s_part = code_str.split("+")
                         p_nums = [int(x) for x in p_part.split(",") if x.isdigit()]
                         s_nums = [int(x) for x in s_part.split(",") if x.isdigit()]
-                    else:
+                    elif "," in code_str:
                         parts = [int(x) for x in code_str.split(",") if x.isdigit()]
                         split_idx = 6 if name == "双色球" else (5 if name == "超级大乐透" else len(parts))
                         p_nums = parts[:split_idx]
                         s_nums = parts[split_idx:]
-                    records.append({"issue": issue, "p": sorted(p_nums), "s": sorted(s_nums)})
+                    if p_nums:
+                        records.append({"issue": issue, "p": sorted(p_nums), "s": sorted(s_nums)})
                 if records:
                     is_real = True
-                    log_msg = f"🟢 成功通过备用 API 节点提取到 {len(records)} 期【{name}】真实开奖记录。"
+                    log_msg = f"🟢 成功链接真实数据节点！抓取到最新 {len(records)} 期【{name}】真实开奖记录。"
         except Exception:
             pass
 
-    # 链路 3：网络完全阻断时的兜底模拟引擎
+    # 通道 2：高可靠镜像 CDN
+    if not records and target_code:
+        try:
+            url2 = f"https://cdn.jsdelivr.net/gh/fanzheng/lottery-data@main/data/{target_code}.json"
+            resp = requests.get(url2, headers=headers, timeout=4)
+            if resp.status_code == 200:
+                json_data = resp.json()[:count]
+                for item in json_data:
+                    issue = str(item.get("issue", "N/A"))
+                    p_nums = [int(x) for x in item.get("red", [])]
+                    s_nums = [int(x) for x in item.get("blue", [])]
+                    records.append({"issue": issue, "p": sorted(p_nums), "s": sorted(s_nums)})
+                if records:
+                    is_real = True
+                    log_msg = f"🟢 成功通过 CDN 镜像提取到 {len(records)} 期【{name}】真实历史记录。"
+        except Exception:
+            pass
+
+    # 通道 3：兜底安全模拟模式
     if not records:
-        log_msg = f"🟡 网络连通受限，已自动切入模拟测试引擎模式。"
+        log_msg = f"🟡 云端海外服务器连接受限，当前处于模拟测试模式（建议在本地电脑运行 streamlit run app.py 获取 100% 直连）。"
         np.random.seed(888)
         for i in range(count, 0, -1):
             issue_str = f"20260{count - i + 1:02d}"
@@ -175,10 +176,6 @@ else:
                         picked_s.add(n)
                         break
             pred_s = sorted(list(picked_s))
-
-        # ==========================================
-        # UI 视图层渲染
-        # ==========================================
 
         # 1. 算法推荐结果置顶
         st.subheader("🔮 70% 热号 + 30% 冷号 算法推荐")
