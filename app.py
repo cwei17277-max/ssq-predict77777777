@@ -4,19 +4,12 @@ import requests
 import numpy as np
 import pandas as pd
 import streamlit as st
-from enum import Enum
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass, field
 
 # ==========================================
-# 1. 数据模型与数据传输对象 (DTO & Enums)
+# 1. 数据模型与规则配置 (纯字符串 Key，彻底避开 Enum 序列化 Bug)
 # ==========================================
-class LotteryType(Enum):
-    SSQ = "双色球"
-    DLT = "超级大乐透"
-    FC3D = "福彩3D"
-    HK6 = "香港六合彩特码"
-
 @dataclass(frozen=True)
 class LotteryRule:
     code: str
@@ -42,32 +35,29 @@ class AnalysisResult:
     predicted_primary: List[int]
     predicted_secondary: List[int]
 
-# 彩种规则定义配置
-LOTTERY_CONFIG: Dict[LotteryType, LotteryRule] = {
-    LotteryType.SSQ: LotteryRule(
+# 使用字符串作为唯一的 ID 标识
+LOTTERY_CONFIG: Dict[str, LotteryRule] = {
+    "双色球": LotteryRule(
         code="ssq", primary_total=33, primary_select=6,
         secondary_total=16, secondary_select=1,
         combinations=math.comb(33, 6) * math.comb(16, 1)
     ),
-    LotteryType.DLT: LotteryRule(
+    "超级大乐透": LotteryRule(
         code="dlt", primary_total=35, primary_select=5,
         secondary_total=12, secondary_select=2,
         combinations=math.comb(35, 5) * math.comb(12, 2)
     ),
-    LotteryType.FC3D: LotteryRule(
+    "福彩3D": LotteryRule(
         code="fc3d", primary_total=10, primary_select=3,
         secondary_total=0, secondary_select=0,
         combinations=10**3, is_zero_indexed=True
     ),
-    LotteryType.HK6: LotteryRule(
+    "香港六合彩特码": LotteryRule(
         code="hk6", primary_total=49, primary_select=1,
         secondary_total=0, secondary_select=0,
         combinations=49
     )
 }
-
-# 建立字符串名称与 Enum 的安全映射表
-NAME_TO_ENUM = {e.value: e for e in LotteryType}
 
 # ==========================================
 # 2. 具备容错降级的 API 客户端
@@ -80,32 +70,32 @@ class LotteryApiClient:
         self.app_secret = app_secret
         self.timeout = 5
 
-    def _parse_open_code(self, lottery_type: LotteryType, open_code: str) -> Tuple[List[int], List[int]]:
+    def _parse_open_code(self, lottery_name: str, open_code: str) -> Tuple[List[int], List[int]]:
         clean_code = open_code.replace(" ", "")
         
-        if lottery_type in [LotteryType.SSQ, LotteryType.DLT]:
+        if lottery_name in ["双色球", "超级大乐透"]:
             if "+" in clean_code:
                 p_str, s_str = clean_code.split("+")
                 primary = [int(x) for x in p_str.split(",") if x.strip()]
                 secondary = [int(x) for x in s_str.split(",") if x.strip()]
             else:
                 parts = [int(x) for x in clean_code.split(",") if x.strip()]
-                split_idx = 6 if lottery_type == LotteryType.SSQ else 5
+                split_idx = 6 if lottery_name == "双色球" else 5
                 primary, secondary = parts[:split_idx], parts[split_idx:]
             return sorted(primary), sorted(secondary)
             
-        elif lottery_type == LotteryType.FC3D:
+        elif lottery_name == "福彩3D":
             primary = [int(x) for x in clean_code.split(",") if x.strip()]
             return primary, []
             
-        elif lottery_type == LotteryType.HK6:
+        elif lottery_name == "香港六合彩特码":
             parts = [int(x) for x in clean_code.split(",") if x.strip()]
             return [parts[-1]] if parts else [0], []
             
-        raise ValueError(f"不支持的彩种: {lottery_type}")
+        raise ValueError(f"不支持的彩种: {lottery_name}")
 
-    def fetch_history(self, lottery_type: LotteryType, count: int = 20) -> List[DrawRecord]:
-        rule = LOTTERY_CONFIG[lottery_type]
+    def fetch_history(self, lottery_name: str, count: int = 20) -> List[DrawRecord]:
+        rule = LOTTERY_CONFIG[lottery_name]
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "app_id": self.app_id,
@@ -121,7 +111,7 @@ class LotteryApiClient:
                     records = []
                     for item in data["data"][:count]:
                         issue = item.get("expect", "N/A")
-                        primary, secondary = self._parse_open_code(lottery_type, item.get("openCode", ""))
+                        primary, secondary = self._parse_open_code(lottery_name, item.get("openCode", ""))
                         records.append(DrawRecord(issue=issue, primary_numbers=primary, secondary_numbers=secondary))
                     if records:
                         return records
@@ -129,10 +119,10 @@ class LotteryApiClient:
             pass # 捕获网络超时或 API 变动，静默降级到模拟数据
 
         # 降级方案：生成可重现的模拟数据，确保前端不白屏/报错
-        return self._generate_fallback_data(lottery_type, count)
+        return self._generate_fallback_data(lottery_name, count)
 
-    def _generate_fallback_data(self, lottery_type: LotteryType, count: int) -> List[DrawRecord]:
-        rule = LOTTERY_CONFIG[lottery_type]
+    def _generate_fallback_data(self, lottery_name: str, count: int) -> List[DrawRecord]:
+        rule = LOTTERY_CONFIG[lottery_name]
         records = []
         np.random.seed(42)
         
@@ -175,8 +165,8 @@ class AnalyticsEngine:
         return counts, omissions
 
     @classmethod
-    def analyze_and_predict(cls, lottery_type: LotteryType, records: List[DrawRecord], hot_ratio: float = 0.7) -> AnalysisResult:
-        rule = LOTTERY_CONFIG[lottery_type]
+    def analyze_and_predict(cls, lottery_name: str, records: List[DrawRecord], hot_ratio: float = 0.7) -> AnalysisResult:
+        rule = LOTTERY_CONFIG[lottery_name]
         
         # 1. 计算主区频次与遗漏
         p_counts, p_omissions = cls.calculate_metrics(records, rule.primary_total, is_secondary=False, is_zero_indexed=rule.is_zero_indexed)
@@ -221,11 +211,11 @@ class AnalyticsEngine:
         )
 
 # ==========================================
-# 4. Streamlit 视图层与密钥配置读取
+# 4. Streamlit 视图层
 # ==========================================
 st.set_page_config(page_title="工业级彩票数据分析平台", layout="wide", page_icon="🎲")
 
-# 安全地从 st.secrets 获取凭证 (未配置 Secrets 时回退到默认密钥)
+# 安全地从 st.secrets 获取凭证
 API_APP_ID = st.secrets.get("API_APP_ID", "oppoim19e7kxgvg8")
 API_APP_SECRET = st.secrets.get("API_APP_SECRET", "VGtwV0x0aGRyNHl0WFFRclU2L0dIQT09")
 
@@ -240,9 +230,8 @@ st.caption("注：本系统仅供数据分析与娱乐学习使用，彩票摇�
 
 # 侧边栏交互设置
 st.sidebar.header("⚙️ 参数设置")
-selected_name = st.sidebar.selectbox("选择彩种", list(NAME_TO_ENUM.keys()))
-selected_enum = NAME_TO_ENUM[selected_name]
-rule = LOTTERY_CONFIG[selected_enum]
+selected_name = st.sidebar.selectbox("选择彩种", list(LOTTERY_CONFIG.keys()))
+rule = LOTTERY_CONFIG[selected_name]
 
 sample_size = st.sidebar.slider("分析期数样本量", min_value=10, max_value=50, value=20, step=5)
 run_btn = st.sidebar.button("🚀 运行混合引擎分析", type="primary", use_container_width=True)
@@ -253,7 +242,7 @@ st.sidebar.subheader("📊 数学概率分析")
 st.sidebar.write(f"**头奖总组合数：** {rule.combinations:,} 种")
 st.sidebar.write(f"**单注头奖概率：** `{(1 / rule.combinations) * 100:.8f}%`")
 
-# 状态管理：存储字符串名称以保障状态安全性
+# 状态管理
 if "active_name" not in st.session_state:
     st.session_state["active_name"] = None
 
@@ -265,15 +254,14 @@ active_name = st.session_state["active_name"]
 if active_name is None:
     st.info("👈 请在左侧选择参数后点击【运行混合引擎分析】开始。")
 else:
-    active_type = NAME_TO_ENUM[active_name]
-    active_rule = LOTTERY_CONFIG[active_type]
+    active_rule = LOTTERY_CONFIG[active_name]
     
     with st.spinner("数据请求与分析运算中..."):
-        records = api_client.fetch_history(active_type, count=sample_size)
-        analysis = AnalyticsEngine.analyze_and_predict(active_type, records)
+        records = api_client.fetch_history(active_name, count=sample_size)
+        analysis = AnalyticsEngine.analyze_and_predict(active_name, records)
 
     # 1. 展现数据表格
-    st.subheader(f"📌 {active_type.value} - 近 {len(records)} 期抓取数据")
+    st.subheader(f"📌 {active_name} - 近 {len(records)} 期抓取数据")
     df_display = pd.DataFrame([{
         "期号": r.issue,
         "主区号码": r.primary_numbers,
