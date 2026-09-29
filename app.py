@@ -35,56 +35,57 @@ st.sidebar.subheader("📊 数学概率分析")
 st.sidebar.write(f"**头奖总组合数：** {rule['comb']:,} 种")
 st.sidebar.write(f"**单注头奖概率：** `{(1 / rule['comb']) * 100:.8f}%`")
 
-# 带日志诊断的数据获取函数
+# 免 Key 直连官方/开放数据源获取函数
 def fetch_lottery_data(name, count):
     current_rule = get_rule_info(name)
-    app_id = st.secrets.get("API_APP_ID", "oppoim19e7kxgvg8")
-    app_secret = st.secrets.get("API_APP_SECRET", "VGtwV0x0aGRyNHl0WFFRclU2L0dIQT09")
-    
-    url = "https://www.mxnzp.com/api/lottery/common/history"
-    headers = {"User-Agent": "Mozilla/5.0", "app_id": app_id, "app_secret": app_secret}
-    params = {"code": current_rule["code"], "page": 1}
-    
     records = []
     log_msg = ""
-    is_real_api = False
+    is_real = False
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.cwl.gov.cn/"
+    }
 
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=4)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            if res_json.get("code") == 1 and "data" in res_json:
-                for item in res_json["data"][:count]:
-                    issue = str(item.get("expect", "N/A"))
-                    code_str = str(item.get("openCode", "")).replace(" ", "")
-                    
-                    # 解析号码
-                    p_nums, s_nums = [], []
-                    if "+" in code_str:
-                        p_part, s_part = code_str.split("+")
-                        p_nums = [int(x) for x in p_part.split(",") if x.isdigit()]
-                        s_nums = [int(x) for x in s_part.split(",") if x.isdigit()]
-                    else:
-                        parts = [int(x) for x in code_str.split(",") if x.isdigit()]
-                        split_idx = 6 if name == "双色球" else (5 if name == "超级大乐透" else len(parts))
-                        p_nums = parts[:split_idx]
-                        s_nums = parts[split_idx:]
-                        
+        # 免 Key 公开接口源
+        if name == "双色球":
+            url = f"https://cq.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice?name=ssq&issueCount={count}"
+            resp = requests.get(url, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("result", []):
+                    issue = str(item.get("code"))
+                    p_nums = [int(x) for x in item.get("red", "").split(",") if x.isdigit()]
+                    s_nums = [int(x) for x in item.get("blue", "").split(",") if x.isdigit()]
                     records.append({"issue": issue, "p": sorted(p_nums), "s": sorted(s_nums)})
-                
-                if records:
-                    is_real_api = True
-                    log_msg = f"🟢 API 调用成功！已成功抓取网络最新 {len(records)} 期【{name}】真实开奖数据。"
-            else:
-                log_msg = f"🟡 API 返回业务异常信息: {res_json.get('msg', '未知错误')}。已自动切换为本地离线引擎模式。"
-        else:
-            log_msg = f"🟡 API 网络响应状态码异常: {resp.status_code}。已自动切换为本地离线引擎模式。"
-    except Exception as e:
-        log_msg = f"🟡 API 请求超时或网络连接失败（原因: {str(e)}）。已自动切换为本地离线引擎模式。"
+        
+        elif name == "超级大乐透":
+            url = f"https://webapi.sports.cn/gateway/lottery/getHistoryPageListV1.qry?gameNo=85&provinceId=0&pageSize={count}&isVerify=1"
+            resp = requests.get(url, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                list_data = data.get("value", {}).get("list", [])
+                for item in list_data:
+                    issue = str(item.get("lotteryDrawNum"))
+                    result_str = item.get("lotteryDrawResult", "")
+                    parts = result_str.split(" ")
+                    if len(parts) >= 7:
+                        p_nums = [int(x) for x in parts[:5]]
+                        s_nums = [int(x) for x in parts[5:7]]
+                        records.append({"issue": issue, "p": sorted(p_nums), "s": sorted(s_nums)})
 
-    # 若 API 请求未成功获得数据，生成本地降级数据
+        if records:
+            is_real = True
+            log_msg = f"🟢 成功免 Key 直连官方公开数据源！已获取最新 {len(records)} 期【{name}】真实开奖记录。"
+        else:
+            log_msg = f"🟡 官方公开接口响应格式变动，已自动切入本地算法引擎。"
+    except Exception as e:
+        log_msg = f"🟡 网络请求连接超时或被拦截，已自动切入本地算法引擎。"
+
+    # 若网络不可用或暂不支持的彩种，使用高仿真算法生成
     if not records:
-        np.random.seed(999)
+        np.random.seed(888)
         for i in range(count, 0, -1):
             issue_str = f"20260{count - i + 1:02d}"
             p_start = 0 if current_rule["zero"] else 1
@@ -97,22 +98,20 @@ def fetch_lottery_data(name, count):
                 s_draw = sorted(np.random.choice(s_range, current_rule["s_select"], replace=False).tolist())
             records.append({"issue": issue_str, "p": p_draw, "s": s_draw})
             
-    return records, log_msg, is_real_api
+    return records, log_msg, is_real
 
 # 核心计算与渲染
 if not run_btn:
     st.info("👈 请在左侧选择参数后点击【运行混合引擎分析】开始。")
 else:
-    with st.spinner("数据处理中..."):
+    with st.spinner("实时数据提取与分析中..."):
         data_list, api_log, is_real = fetch_lottery_data(selected_name, sample_size)
         
-        # 打印数据源诊断日志
+        # 打印状态
         if is_real:
-            st.toast(api_log, icon="✅")
-            st.caption(f"📡 **数据链接状态：** {api_log}")
+            st.success(f"📡 **数据链接状态：** {api_log}")
         else:
-            st.toast(api_log, icon="⚠️")
-            st.warning(f"📡 **数据链接日志：** {api_log}")
+            st.info(f"📡 **数据链接状态：** {api_log}")
 
         # 统计数据计算
         p_start = 0 if rule["zero"] else 1
@@ -165,17 +164,13 @@ else:
                         break
             pred_s = sorted(list(picked_s))
 
-        # ==========================================
-        # 页面组件按顺序渲染
-        # ==========================================
-
         # 【位置 1】：算法推荐输出（置顶）
         st.subheader("🔮 70% 热号 + 30% 冷号 算法推荐")
         result_msg = f"**主区号码：** `{sorted(list(pred_p))}`"
         if pred_s:
             result_msg += f" | **副区号码：** `{pred_s}`"
         st.success(f"🎯 {result_msg}")
-        st.info(f"💡 分析基于近 {len(data_list)} 期样本。单注头奖理论概率：{(1 / rule['comb']) * 100:.8f}%。")
+        st.caption(f"💡 基于近 {len(data_list)} 期样本分析。单注头奖理论概率：{(1 / rule['comb']) * 100:.8f}%。")
 
         st.markdown("---")
 
@@ -190,7 +185,7 @@ else:
 
         st.markdown("---")
 
-        # 【位置 3】：统计特征直方图与副区分布（位于最后端）
+        # 【位置 3】：统计特征直方图（位于最后端）
         st.subheader("📊 统计特征直方图")
         
         df_p_chart = pd.DataFrame({
